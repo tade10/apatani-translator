@@ -13,6 +13,25 @@ import re
 # ap_to_en: { "áamì": "cat", "aarda": "tomorrow", ... }
 # en_to_ap: { "cat": "áamì", "tomorrow": "aarda", ... }
 
+def clean_definition(text):
+    """Trim a verbose definition to its first short meaning.
+    'father; daddy; papa' → 'father'
+    'to go or come home; to visit someone' → 'to go or come home'
+    '[a´pi] n' → None  (parsing artifact, discard)
+    """
+    if not text:
+        return None
+    # Discard PDF parsing artifacts that start with [ or contain only symbols
+    if text.startswith('[') or re.match(r'^[\[\]/\s\d\'\`\´]+$', text):
+        return None
+    # Take only the first meaning (before first semicolon)
+    first = text.split(';')[0].strip().rstrip('.')
+    # Discard if too short or looks like a tag
+    if len(first) < 2:
+        return None
+    return first
+
+
 def load_dictionaries():
     ap_to_en = {}  # Apatani word  → English meaning
     en_to_ap = {}  # English word  → Apatani word
@@ -21,9 +40,8 @@ def load_dictionaries():
     with open('apatani_words.csv', encoding='utf-8') as f:
         for row in csv.DictReader(f):
             ap = row['Apatani'].strip()
-            en = row['English'].strip()
+            en = clean_definition(row['English'].strip())
             if ap and en:
-                # Store lowercase key so "Cat" and "cat" both match
                 ap_to_en[ap.lower()] = en
 
     # Load English→Apatani index
@@ -37,8 +55,65 @@ def load_dictionaries():
     return ap_to_en, en_to_ap
 
 
+# ── Common word supplements ───────────────────────────────────────────────────
+#
+# The academic EN→AP index misses basic conversational words.
+# These are handcrafted from the sentence pairs and dictionary examples.
+# Add more here as needed — format: 'english': 'apatani'
+
+EN_AP_SUPPLEMENT = {
+    # Pronouns
+    'i': 'ngo', 'me': 'ngo', 'my': 'ngiika', 'mine': 'ngiika',
+    'you': 'no', 'your': 'nwka',
+    'he': 'mo', 'she': 'mo', 'his': 'moka', 'her': 'moka',
+    'we': 'ngiinyi', 'our': 'ngiinyika',
+    'they': 'henku', 'their': 'henkuka',
+    'this': 'si', 'that': 'hwka',
+    # Common verbs / copula
+    'is': 'do', 'am': 'do', 'are': 'do', 'was': 'du', 'were': 'du',
+    'have': 'ahi', 'has': 'ahi',
+    'eat': 'dii', 'drink': 'tu',
+    'go': 'ich', 'come': 'a',
+    'want': 'dwnado', 'need': 'dwnado',
+    'speak': 'lu', 'say': 'lu', 'tell': 'lu',
+    'know': 'helo',
+    # Common nouns
+    'name': 'tabu', 'person': 'ako', 'people': 'mwlañja',
+    'house': 'ude', 'village': 'lemba',
+    'water': 'yasi', 'rice': 'apin', 'food': 'apin',
+    'father': 'aba', 'mother': 'ane', 'brother': 'aban', 'sister': 'ani',
+    'child': 'wqa', 'baby': 'wqa',
+    'day': 'lo', 'night': 'ayo', 'morning': 'aro', 'tomorrow': 'arda',
+    'year': 'rañ', 'time': 'myodu',
+    'sun': 'abo', 'fire': 'mii', 'water': 'yasi',
+    # Question words
+    'what': 'nii', 'where': 'nona', 'when': 'hendo',
+    'who': 'nunu', 'how': 'heni', 'why': 'helo',
+    # Common adjectives
+    'good': 'aro', 'bad': 'abu', 'big': 'kaye', 'small': 'pichi',
+    'many': 'abu', 'much': 'abu', 'little': 'iche',
+    'fast': 'aare', 'slow': 'ado',
+    'new': 'kanyan', 'old': 'ako',
+    # Misc
+    'yes': 'ao', 'no': 'ale', 'not': 'ma',
+    'here': 'so', 'there': 'hwka',
+    'also': 'kw', 'and': 'pe', 'but': 'ke',
+    'please': 'pe', 'thank': 'paya', 'welcome': 'hangw',
+}
+
+AP_EN_SUPPLEMENT = {v: k for k, v in EN_AP_SUPPLEMENT.items()}
+
+
 # Load once when this file is imported — not on every translation request
 ap_to_en, en_to_ap = load_dictionaries()
+
+# Merge supplements (don't overwrite existing entries — dictionary takes priority)
+for k, v in EN_AP_SUPPLEMENT.items():
+    if k not in en_to_ap:
+        en_to_ap[k] = v
+for k, v in AP_EN_SUPPLEMENT.items():
+    if k not in ap_to_en:
+        ap_to_en[k] = v
 
 print(f"Dictionary loaded: {len(ap_to_en)} AP→EN entries, {len(en_to_ap)} EN→AP entries")
 
@@ -84,18 +159,23 @@ model, tokenizer_ap, tokenizer_en, metadata = load_ml_model()
 
 def lookup_word(word, direction='en_to_ap'):
     key = word.strip().lower()
+    original = word.strip()
     dictionary = en_to_ap if direction == 'en_to_ap' else ap_to_en
 
     # 1. Exact match
     if key in dictionary:
         return dictionary[key], 'exact'
 
-    # 2. Fuzzy match
-    # get_close_matches returns a list of the closest keys, best match first
-    matches = difflib.get_close_matches(key, dictionary.keys(), n=1, cutoff=0.6)
+    # 2. Skip fuzzy matching for likely proper nouns (capitalized, length > 2)
+    #    and for very short words — too easy to get a wrong fuzzy match
+    if (original[0].isupper() and len(original) > 2) or len(original) <= 2:
+        return None, 'not found'
+
+    # 3. Fuzzy match — raised cutoff to 0.75 to reduce wrong matches
+    matches = difflib.get_close_matches(key, dictionary.keys(), n=1, cutoff=0.75)
     if matches:
         best = matches[0]
-        return dictionary[best], f'fuzzy (matched "{best}")'
+        return dictionary[best], f'fuzzy'
 
     return None, 'not found'
 
@@ -176,12 +256,9 @@ def ml_translate(text, direction='ap_to_en'):
 #   2. Word-by-word  — fallback using dictionary lookup per word
 
 def translate_text(text, direction='en_to_ap'):
-    # Strategy 1: try the ML model (works best for full sentences, AP→EN only)
-    ml_result = ml_translate(text, direction)
-    if ml_result:
-        return ml_result, 'ml'
-
-    # Strategy 2: word-by-word dictionary lookup (works for both directions)
+    # Word-by-word dictionary lookup for both directions.
+    # The ML model (AP→EN) is kept for future improvement but disabled for now —
+    # its validation accuracy (35%) is too low to produce reliable output.
     words = re.findall(r"[\w']+|[^\w\s]", text)
     translated = []
     for word in words:
@@ -191,6 +268,10 @@ def translate_text(text, direction='en_to_ap'):
             continue
 
         result, _ = lookup_word(word, direction)
-        translated.append(result if result else f'[{word}]')
+        # Proper nouns that weren't found: pass through as-is (don't bracket names)
+        if result is None and word[0].isupper():
+            translated.append(word)
+        else:
+            translated.append(result if result else f'[{word}]')
 
     return ' '.join(translated), 'dictionary'
