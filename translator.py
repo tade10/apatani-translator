@@ -65,3 +65,38 @@ def lookup_word(word, direction='en_to_ap'):
         return dictionary[best], f'fuzzy (matched "{best}")'
 
     return None, 'not found'
+
+
+# ── Sentence Translation ──────────────────────────────────────────────────────
+#
+# translate_text splits the input into individual words and looks up each one.
+#
+# For example: "the cat sleeps" → ["the", "cat", "sleeps"]
+#   "the"    → not found  → kept as "[the]"
+#   "cat"    → áamì
+#   "sleeps" → not found  → kept as "[sleeps]"
+# Result: "[the] áamì [sleeps]"
+#
+# Words wrapped in [brackets] signal to the user they weren't translated.
+# This is honest — better than silently dropping words.
+
+def translate_text(text, direction='en_to_ap'):
+    # Split on spaces but keep punctuation attached to words for now
+    import re
+    words = re.findall(r"[\w']+|[^\w\s]", text)
+
+    translated = []
+    for word in words:
+        # Skip punctuation — pass it through unchanged
+        if not word.isalpha() and not any(c.isalpha() for c in word):
+            translated.append(word)
+            continue
+
+        result, _ = lookup_word(word, direction)
+        if result:
+            translated.append(result)
+        else:
+            # Wrap untranslated words in brackets so the user knows
+            translated.append(f'[{word}]')
+
+    return ' '.join(translated)
