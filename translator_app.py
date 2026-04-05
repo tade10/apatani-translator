@@ -50,4 +50,4 @@ def health():
 if __name__ == '__main__':
     print("Starting Apatani Translator...")
     print("Visit http://localhost:5000")
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5001)
